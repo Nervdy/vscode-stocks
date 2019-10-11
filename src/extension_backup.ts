@@ -1,7 +1,5 @@
 import * as vscode from 'vscode'
-import * as http from 'http'
-import * as stock from './stock'
-// const stock = require('./stock.js').activate
+import * as https from 'https'
 
 let items: Map<string, vscode.StatusBarItem>
 export function activate(context: vscode.ExtensionContext) {
@@ -12,18 +10,14 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(refresh))
 }
 
+// this method is called when your extension is deactivated
+export function deactivate() {
+}
 
-let refreshIndex = 0
-let bankStockList: any[] = []
-async function refresh(): Promise<void> {
+function refresh(): void {
     const config = vscode.workspace.getConfiguration()
-    let configuredSymbols = config.get('vscode-stocks.stockSymbols', [])
-    
-    if (refreshIndex % 60 === 0) {
-        bankStockList = await stock.activate()
-    }
-    refreshIndex++
-    configuredSymbols = configuredSymbols.concat(bankStockList.map(i => 'sh' + i))
+    const configuredSymbols = config.get('vscode-stocks.stockSymbols', [])
+        .map(symbol => symbol.toUpperCase())
 
     if (!arrayEq(configuredSymbols, Array.from(items.keys()))) {
         cleanup()
@@ -58,38 +52,41 @@ async function refreshSymbols(symbols: string[]): Promise<void> {
     if (!symbols.length) {
         return;
     }
-    const url = `http://qt.gtimg.cn/q=${symbols.join(',')}`;
+
+    const url = `https://api.iextrading.com/1.0/stock/market/batch?symbols=${symbols.join(',')}&types=quote`
     try {
         const response = await httpGet(url)
-        // let matched = response.match(/".*"/g);
-        let matched = parseContent(response)
-        symbols.map((item, index) => {
-          updateItemWithSymbolQuote(item, matched[index]);
-        })
+        const responseObj = JSON.parse(response)
+        Object.keys(responseObj)
+            .forEach(key => updateItemWithSymbolQuote(responseObj[key].quote))
     } catch (e) {
         throw new Error(`Invalid response: ${e.message}`);
     }
 }
 
-function updateItemWithSymbolQuote(symbol, symbolQuote) {
+function updateItemWithSymbolQuote(symbolQuote) {
+    const symbol = symbolQuote.symbol.toUpperCase()
     const item = items.get(symbol)
-    const price = Number(symbolQuote.price).toFixed(2)
-    const changevalue = Number(symbolQuote.changevalue).toFixed(2)
-    const changerate = symbolQuote.changerate
-    const pbratio = symbolQuote.pbratio
+    const price: number = symbolQuote.latestPrice
 
-    if (symbol === 'sh000001' || symbol === 'sh000300') {
-        item.text = `${symbol.slice(-3)} ${price} ${changevalue} ${changerate}`
+    item.text = `${symbol.toUpperCase()} $${price.toFixed(2)}`
+    const config = vscode.workspace.getConfiguration()
+    const useColors = config.get('vscode-stocks.useColors', false)
+    if (useColors) {
+        const change = parseFloat(symbolQuote.change)
+        const color = change > 0 ? 'lightgreen' :
+            change < 0 ? 'pink':
+            'white'
+        item.color = color
     } else {
-        item.text = `${symbol.slice(-3)} ${price} ${changevalue} ${changerate} ${pbratio}`
+        item.color = undefined
     }
 }
 
 function httpGet(url): Promise<string> {
     return new Promise((resolve, reject) => {
-        http.get(url, response => {
+        https.get(url, response => {
             let responseData = '';
-            response.setEncoding('utf-8');
             response.on('data', chunk => responseData += chunk);
             response.on('end', () => {
                 // Sometimes the 'error' event is not fired. Double check here.
@@ -107,22 +104,4 @@ function arrayEq(arr1: any[], arr2: any[]): boolean {
     if (arr1.length !== arr2.length) return false
 
     return arr1.every((item, i) => item === arr2[i])
-}
-function parseContent(content) {
-    let parseResult = [];
-    let contentArr = content.trim().split(';');
-    for (const item of contentArr) {
-        if (item.length === 0)
-            continue;
-        let itemArr = item.split('~');
-        parseResult.push({
-            code: itemArr[2],
-            price: itemArr[3],
-            changevalue: itemArr[31],
-            changerate: itemArr[32],
-            marketcap: itemArr[45],
-            pbratio: itemArr[46] // 市净率
-        });
-    }
-    return parseResult;
 }
